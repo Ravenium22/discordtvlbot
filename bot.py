@@ -13,7 +13,7 @@ load_dotenv()
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 RPC_URL = os.environ.get('RPC_URL')
 
-# Convert all addresses to checksum format
+# Contract addresses
 VAULT_ADDRESS = Web3.to_checksum_address("0x8f88aE3798E8fF3D0e0DE7465A0863C9bbB577f0")
 WETH_ADDRESS = Web3.to_checksum_address("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
 STONE_ADDRESS = Web3.to_checksum_address("0x7122985656e38BDC0302Db86685bb972b145bD3C")
@@ -23,7 +23,7 @@ w3 = Web3(Web3.HTTPProvider(RPC_URL)) if RPC_URL else None
 if w3:
     w3.middleware_onion.inject(geth_poa_middleware, layer=0)
 
-# ERC20 ABI for balanceOf
+# ERC20 ABI
 ERC20_ABI = [
     {
         "constant": True,
@@ -46,22 +46,30 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='?', intents=intents)
 
-async def get_eth_price():
-    """Get current ETH price from CoinGecko"""
+async def get_token_prices():
+    """Get both ETH and Stone prices from CoinGecko"""
     try:
         async with aiohttp.ClientSession() as session:
-            url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data['ethereum']['usd']
-    except Exception as e:
-        print(f"Error fetching ETH price: {str(e)}")
-    return None
+            # Get ETH price
+            eth_url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
+            async with session.get(eth_url) as response:
+                if response.status != 200:
+                    return None, None
+                eth_data = await response.json()
+                eth_price = eth_data['ethereum']['usd']
 
-async def get_stone_price():
-    """Get Stone price (assuming 1:1 with ETH for now)"""
-    return await get_eth_price()
+            # Get Stone price
+            stone_url = "https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses=0x7122985656e38BDC0302Db86685bb972b145bD3C&vs_currencies=usd"
+            async with session.get(stone_url) as response:
+                if response.status != 200:
+                    return None, None
+                stone_data = await response.json()
+                stone_price = stone_data.get('0x7122985656e38bdc0302db86685bb972b145bd3c', {}).get('usd', 0)
+
+            return eth_price, stone_price
+    except Exception as e:
+        print(f"Error fetching prices: {str(e)}")
+        return None, None
 
 async def get_token_balance(token_address, wallet_address):
     """Get ERC20 token balance"""
@@ -75,29 +83,33 @@ async def get_token_balance(token_address, wallet_address):
         return 0
 
 async def calculate_tvl():
-    """Calculate TVL by getting both WETH and Stone balances"""
+    """Calculate TVL using actual token prices"""
     try:
         if not w3 or not w3.is_connected():
             return None, "RPC connection failed"
 
-        # Get WETH balance
+        # Get balances
         weth_balance = await get_token_balance(WETH_ADDRESS, VAULT_ADDRESS)
-        
-        # Get Stone balance
         stone_balance = await get_token_balance(STONE_ADDRESS, VAULT_ADDRESS)
-        print(f"Stone balance: {stone_balance}")  # Debug print
-        
+        print(f"WETH balance: {weth_balance}")
+        print(f"Stone balance: {stone_balance}")
+
         # Get prices
-        eth_price = await get_eth_price()
-        stone_price = await get_stone_price()  # Assuming 1:1 with ETH for now
+        eth_price, stone_price = await get_token_prices()
+        print(f"ETH price: ${eth_price}")
+        print(f"Stone price: ${stone_price}")
         
         if eth_price is None or stone_price is None:
-            return None, "Failed to fetch prices"
+            return None, "Failed to fetch token prices"
 
         # Calculate total TVL in USD
         weth_value = weth_balance * eth_price
         stone_value = stone_balance * stone_price
         total_tvl = weth_value + stone_value
+
+        print(f"WETH value: ${weth_value:,.2f}")
+        print(f"Stone value: ${stone_value:,.2f}")
+        print(f"Total TVL: ${total_tvl:,.2f}")
 
         return total_tvl, None
 
@@ -113,14 +125,11 @@ async def on_ready():
 async def tvl(ctx):
     """Command to fetch and display TVL"""
     try:
-        # Send initial response
         message = await ctx.send("Calculating TVL...")
         
-        # Calculate TVL
         tvl_value, error = await calculate_tvl()
         
         if tvl_value is not None:
-            # Format TVL value
             if tvl_value >= 1_000_000_000:
                 formatted_tvl = f"${tvl_value / 1_000_000_000:.1f}B"
             else:
