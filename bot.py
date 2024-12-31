@@ -14,9 +14,14 @@ DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 RPC_URL = os.environ.get('RPC_URL')
 
 # Contract addresses
-VAULT_ADDRESS = Web3.to_checksum_address("0x8f88aE3798E8fF3D0e0DE7465A0863C9bbB577f0")
-WETH_ADDRESS = Web3.to_checksum_address("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
-STONE_ADDRESS = Web3.to_checksum_address("0x7122985656e38BDC0302Db86685bb972b145bD3C")
+# StakeStone Vault
+STAKESTONE_VAULT = Web3.to_checksum_address("0x8f88aE3798E8fF3D0e0DE7465A0863C9bbB577f0")
+STAKESTONE_WETH = Web3.to_checksum_address("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
+STAKESTONE_STONE = Web3.to_checksum_address("0x7122985656e38BDC0302Db86685bb972b145bD3C")
+
+# EtheneConcrete Vault
+ETHENE_VAULT = Web3.to_checksum_address("0x9DC37e4a901b1e21Bd05E75c3B9A633A17001a39")
+ETHENE_TOKEN = Web3.to_checksum_address("0xf80c6636F9597d6a7FC1E5182B168B71e98Fd1cB")
 
 # Initialize Web3
 w3 = Web3(Web3.HTTPProvider(RPC_URL)) if RPC_URL else None
@@ -47,14 +52,14 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='?', intents=intents)
 
 async def get_token_prices():
-    """Get both ETH and Stone prices from CoinGecko"""
+    """Get token prices from CoinGecko"""
     try:
         async with aiohttp.ClientSession() as session:
             # Get ETH price
             eth_url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
             async with session.get(eth_url) as response:
                 if response.status != 200:
-                    return None, None
+                    return None, None, None
                 eth_data = await response.json()
                 eth_price = eth_data['ethereum']['usd']
 
@@ -62,14 +67,17 @@ async def get_token_prices():
             stone_url = "https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses=0x7122985656e38BDC0302Db86685bb972b145bD3C&vs_currencies=usd"
             async with session.get(stone_url) as response:
                 if response.status != 200:
-                    return None, None
+                    return None, None, None
                 stone_data = await response.json()
                 stone_price = stone_data.get('0x7122985656e38bdc0302db86685bb972b145bd3c', {}).get('usd', 0)
+                
+            # Get Ethene price (assuming same as ETH for now, adjust if needed)
+            ethene_price = eth_price
 
-            return eth_price, stone_price
+            return eth_price, stone_price, ethene_price
     except Exception as e:
         print(f"Error fetching prices: {str(e)}")
-        return None, None
+        return None, None, None
 
 async def get_token_balance(token_address, wallet_address):
     """Get ERC20 token balance"""
@@ -82,36 +90,40 @@ async def get_token_balance(token_address, wallet_address):
         print(f"Error getting balance for token {token_address}: {str(e)}")
         return 0
 
+def format_value(value):
+    """Format value to M/B format"""
+    if value >= 1_000_000_000:
+        return f"${value / 1_000_000_000:.1f}B"
+    return f"${value / 1_000_000:.1f}M"
+
 async def calculate_tvl():
-    """Calculate TVL using actual token prices"""
+    """Calculate TVL for both vaults"""
     try:
         if not w3 or not w3.is_connected():
             return None, "RPC connection failed"
 
-        # Get balances
-        weth_balance = await get_token_balance(WETH_ADDRESS, VAULT_ADDRESS)
-        stone_balance = await get_token_balance(STONE_ADDRESS, VAULT_ADDRESS)
-        print(f"WETH balance: {weth_balance}")
-        print(f"Stone balance: {stone_balance}")
-
         # Get prices
-        eth_price, stone_price = await get_token_prices()
-        print(f"ETH price: ${eth_price}")
-        print(f"Stone price: ${stone_price}")
-        
-        if eth_price is None or stone_price is None:
+        eth_price, stone_price, ethene_price = await get_token_prices()
+        if None in [eth_price, stone_price, ethene_price]:
             return None, "Failed to fetch token prices"
 
-        # Calculate total TVL in USD
-        weth_value = weth_balance * eth_price
-        stone_value = stone_balance * stone_price
-        total_tvl = weth_value + stone_value
+        # Calculate StakeStone Vault TVL
+        stakestone_weth = await get_token_balance(STAKESTONE_WETH, STAKESTONE_VAULT)
+        stakestone_stone = await get_token_balance(STAKESTONE_STONE, STAKESTONE_VAULT)
+        stakestone_tvl = (stakestone_weth * eth_price) + (stakestone_stone * stone_price)
 
-        print(f"WETH value: ${weth_value:,.2f}")
-        print(f"Stone value: ${stone_value:,.2f}")
-        print(f"Total TVL: ${total_tvl:,.2f}")
+        # Calculate Ethene Vault TVL
+        ethene_balance = await get_token_balance(ETHENE_TOKEN, ETHENE_VAULT)
+        ethene_tvl = ethene_balance * ethene_price
 
-        return total_tvl, None
+        # Calculate total TVL
+        total_tvl = stakestone_tvl + ethene_tvl
+
+        return {
+            'stakestone': stakestone_tvl,
+            'ethene': ethene_tvl,
+            'total': total_tvl
+        }, None
 
     except Exception as e:
         print(f"Error calculating TVL: {str(e)}")
@@ -127,21 +139,16 @@ async def tvl(ctx):
     try:
         message = await ctx.send("Calculating TVL...")
         
-        tvl_value, error = await calculate_tvl()
+        tvl_data, error = await calculate_tvl()
         
-        if tvl_value is not None:
-            if tvl_value >= 1_000_000_000:
-                formatted_tvl = f"${tvl_value / 1_000_000_000:.1f}B"
-            else:
-                formatted_tvl = f"${tvl_value / 1_000_000:.1f}M"
+        if tvl_data is not None:
+            # Format the message
+            response = f"""```
+StakeStone Vault: {format_value(tvl_data['stakestone'])}
+EtheneXConcrete Vault: {format_value(tvl_data['ethene'])}
+TOTAL TVL: {format_value(tvl_data['total'])}```"""
             
-            embed = discord.Embed(
-                title="StoneBeraVault TVL",
-                description=formatted_tvl,
-                color=discord.Color.blue()
-            )
-            
-            await message.edit(content=None, embed=embed)
+            await message.edit(content=response)
         else:
             await message.edit(content=f"Unable to calculate TVL: {error}")
     except Exception as e:
