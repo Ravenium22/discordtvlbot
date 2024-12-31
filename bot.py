@@ -16,7 +16,7 @@ RPC_URL = os.environ.get('RPC_URL')
 # Convert all addresses to checksum format
 VAULT_ADDRESS = Web3.to_checksum_address("0x8f88aE3798E8fF3D0e0DE7465A0863C9bbB577f0")
 WETH_ADDRESS = Web3.to_checksum_address("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
-STONE_ADDRESS = Web3.to_checksum_address("0x7e1e303ca1923cadb6f312425235e284d965c8f6")  # Made lowercase before checksum
+STONE_ADDRESS = Web3.to_checksum_address("0x7122985656e38BDC0302Db86685bb972b145bD3C")
 
 # Initialize Web3
 w3 = Web3(Web3.HTTPProvider(RPC_URL)) if RPC_URL else None
@@ -74,29 +74,24 @@ async def calculate_tvl():
     """Calculate TVL by getting WETH and Stone balances"""
     try:
         if not w3 or not w3.is_connected():
-            return None, None, None, "RPC connection failed"
+            return None, "RPC connection failed"
 
         # Get WETH balance
         weth_balance = await get_token_balance(WETH_ADDRESS, VAULT_ADDRESS)
-        print(f"WETH Balance: {weth_balance}")
-        
-        # Get Stone balance
-        stone_balance = await get_token_balance(STONE_ADDRESS, VAULT_ADDRESS)
-        print(f"Stone Balance: {stone_balance}")
         
         # Get ETH price
         eth_price = await get_eth_price()
         if eth_price is None:
-            return None, None, None, "Failed to fetch ETH price"
+            return None, "Failed to fetch ETH price"
 
-        # Calculate TVL in USD (assuming WETH = ETH price)
+        # Calculate TVL in USD (using WETH value)
         tvl_usd = weth_balance * eth_price
 
-        return tvl_usd, weth_balance, stone_balance, None
+        return tvl_usd, None
 
     except Exception as e:
         print(f"Error calculating TVL: {str(e)}")
-        return None, None, None, str(e)
+        return None, str(e)
 
 @bot.event
 async def on_ready():
@@ -110,21 +105,20 @@ async def tvl(ctx):
         message = await ctx.send("Calculating TVL...")
         
         # Calculate TVL
-        tvl_value, weth_balance, stone_balance, error = await calculate_tvl()
+        tvl_value, error = await calculate_tvl()
         
         if tvl_value is not None:
-            formatted_tvl = f"${tvl_value:,.2f}"
-            formatted_weth = f"{weth_balance:,.4f} WETH"
-            formatted_stone = f"{stone_balance:,.4f} STONE"
+            # Format TVL value (e.g., 300M)
+            if tvl_value >= 1_000_000_000:
+                formatted_tvl = f"${tvl_value / 1_000_000_000:.1f}B"
+            else:
+                formatted_tvl = f"${tvl_value / 1_000_000:.1f}M"
             
             embed = discord.Embed(
                 title="StoneBeraVault TVL",
+                description=formatted_tvl,
                 color=discord.Color.blue()
             )
-            embed.add_field(name="TVL (USD)", value=formatted_tvl, inline=True)
-            embed.add_field(name="WETH Balance", value=formatted_weth, inline=True)
-            embed.add_field(name="STONE Balance", value=formatted_stone, inline=True)
-            embed.set_footer(text="Data fetched from token balances")
             
             await message.edit(content=None, embed=embed)
         else:
