@@ -19,11 +19,11 @@ STAKESTONE_VAULT = Web3.to_checksum_address("0x8f88aE3798E8fF3D0e0DE7465A0863C9b
 STAKESTONE_WETH = Web3.to_checksum_address("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
 STAKESTONE_STONE = Web3.to_checksum_address("0x7122985656e38BDC0302Db86685bb972b145bD3C")
 
-# Ethena Tokens (first let's verify sUSDe/USDe in their respective vaults)
+# Ethena Tokens and their correct vaults
 SUDE_TOKEN = Web3.to_checksum_address("0x9D39A5DE30e57443BfF2A8307A4256c8797A3497")  # sUSDe token
 USDE_TOKEN = Web3.to_checksum_address("0x4c9EDD5852cd905f086C759E8383e09bff1E68B3")   # USDe token
-SUDE_VAULT = Web3.to_checksum_address("0x9DC37e4a901b1e21Bd05E75c3B9A633A17001a39")  # Vault holding sUSDe
-USDE_VAULT = Web3.to_checksum_address("0xf80c6636F9597d6a7FC1E5182B168B71e98Fd1cB")  # Vault holding USDe
+SUDE_VAULT = Web3.to_checksum_address("0xf80c6636F9597d6a7FC1E5182B168B71e98Fd1cB")  # Vault for sUSDe
+USDE_VAULT = Web3.to_checksum_address("0x9DC37e4a901b1e21Bd05E75c3B9A633A17001a39")  # Vault for USDe
 
 # Initialize Web3
 w3 = Web3(Web3.HTTPProvider(RPC_URL)) if RPC_URL else None
@@ -53,6 +53,19 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='?', intents=intents)
 
+async def get_eth_price():
+    """Get ETH price from CoinGecko"""
+    try:
+        headers = {'accept': 'application/json'}
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd", headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data['ethereum']['usd']
+    except Exception as e:
+        print(f"Error fetching ETH price: {str(e)}")
+    return None
+
 async def get_token_balance(token_address, wallet_address):
     """Get ERC20 token balance with detailed logging"""
     try:
@@ -73,45 +86,39 @@ def format_value(value):
     return f"${value / 1_000_000:.1f}M"
 
 async def calculate_tvl():
-    """Calculate TVL for both protocols with detailed logging"""
+    """Calculate TVL for both protocols"""
     try:
         if not w3 or not w3.is_connected():
             return None, "RPC connection failed"
 
+        eth_price = await get_eth_price()
+        if eth_price is None:
+            return None, "Failed to fetch ETH price"
+
         # StakeStone TVL calculation
         stakestone_weth = await get_token_balance(STAKESTONE_WETH, STAKESTONE_VAULT)
         stakestone_stone = await get_token_balance(STAKESTONE_STONE, STAKESTONE_VAULT)
-        print(f"StakeStone - WETH balance: {stakestone_weth}")
-        print(f"StakeStone - Stone balance: {stakestone_stone}")
+        stakestone_tvl = (stakestone_weth * eth_price) + (stakestone_stone * eth_price)
         
         # Ethena TVL calculation
-        # First check USDE holdings
         usde_balance = await get_token_balance(USDE_TOKEN, USDE_VAULT)
-        print(f"Ethena - USDe balance in vault: {usde_balance}")
-        
-        # Then check sUSDe holdings
         sude_balance = await get_token_balance(SUDE_TOKEN, SUDE_VAULT)
-        print(f"Ethena - sUSDe balance in vault: {sude_balance}")
+        ethena_tvl = usde_balance + sude_balance  # Both are stablecoins so using $1
         
-        # Calculate TVLs (using ETH price only for WETH, stablecoins at $1)
-        eth_price = 3000  # Using fixed price temporarily for debugging
-        stakestone_tvl = (stakestone_weth * eth_price) + (stakestone_stone * eth_price)  # Assuming Stone price = ETH price for now
-        ethena_tvl = (usde_balance * 1.0) + (sude_balance * 1.0)  # Both are stablecoins so using $1
-
         total_tvl = stakestone_tvl + ethena_tvl
 
         print(f"""
-Detailed TVL Breakdown:
-----------------------
+TVL Breakdown:
+-------------
 StakeStone:
-- WETH Value: ${stakestone_weth * eth_price:,.2f}
-- Stone Value: ${stakestone_stone * eth_price:,.2f}
-- Total: ${stakestone_tvl:,.2f}
+WETH: {stakestone_weth} (${stakestone_weth * eth_price:,.2f})
+Stone: {stakestone_stone} (${stakestone_stone * eth_price:,.2f})
+Total: ${stakestone_tvl:,.2f}
 
 Ethena:
-- USDe Value: ${usde_balance:,.2f}
-- sUSDe Value: ${sude_balance:,.2f}
-- Total: ${ethena_tvl:,.2f}
+USDe: ${usde_balance:,.2f}
+sUSDe: ${sude_balance:,.2f}
+Total: ${ethena_tvl:,.2f}
 
 Total TVL: ${total_tvl:,.2f}
 """)
