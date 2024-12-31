@@ -59,6 +59,10 @@ async def get_eth_price():
         print(f"Error fetching ETH price: {str(e)}")
     return None
 
+async def get_stone_price():
+    """Get Stone price (assuming 1:1 with ETH for now)"""
+    return await get_eth_price()
+
 async def get_token_balance(token_address, wallet_address):
     """Get ERC20 token balance"""
     try:
@@ -71,7 +75,7 @@ async def get_token_balance(token_address, wallet_address):
         return 0
 
 async def calculate_tvl():
-    """Calculate TVL by getting WETH and Stone balances"""
+    """Calculate TVL by getting both WETH and Stone balances"""
     try:
         if not w3 or not w3.is_connected():
             return None, "RPC connection failed"
@@ -79,15 +83,23 @@ async def calculate_tvl():
         # Get WETH balance
         weth_balance = await get_token_balance(WETH_ADDRESS, VAULT_ADDRESS)
         
-        # Get ETH price
+        # Get Stone balance
+        stone_balance = await get_token_balance(STONE_ADDRESS, VAULT_ADDRESS)
+        print(f"Stone balance: {stone_balance}")  # Debug print
+        
+        # Get prices
         eth_price = await get_eth_price()
-        if eth_price is None:
-            return None, "Failed to fetch ETH price"
+        stone_price = await get_stone_price()  # Assuming 1:1 with ETH for now
+        
+        if eth_price is None or stone_price is None:
+            return None, "Failed to fetch prices"
 
-        # Calculate TVL in USD (using WETH value)
-        tvl_usd = weth_balance * eth_price
+        # Calculate total TVL in USD
+        weth_value = weth_balance * eth_price
+        stone_value = stone_balance * stone_price
+        total_tvl = weth_value + stone_value
 
-        return tvl_usd, None
+        return total_tvl, None
 
     except Exception as e:
         print(f"Error calculating TVL: {str(e)}")
@@ -108,7 +120,7 @@ async def tvl(ctx):
         tvl_value, error = await calculate_tvl()
         
         if tvl_value is not None:
-            # Format TVL value (e.g., 300M)
+            # Format TVL value
             if tvl_value >= 1_000_000_000:
                 formatted_tvl = f"${tvl_value / 1_000_000_000:.1f}B"
             else:
