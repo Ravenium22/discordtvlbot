@@ -8,44 +8,36 @@ from dotenv import load_dotenv
 import aiohttp
 import sys
 
-# Load environment variables - try both methods
-load_dotenv()  # For local development
-DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')  # Changed from os.getenv to os.environ.get
+# Load environment variables
+load_dotenv()
+DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 
 # Validate token exists
 if not DISCORD_TOKEN:
     print("Error: No Discord token provided. Please set the DISCORD_TOKEN environment variable.")
     sys.exit(1)
 
-print("Token validation: Token exists and is", len(DISCORD_TOKEN), "characters long")  # Debug line
+print("Token validation: Token exists and is", len(DISCORD_TOKEN), "characters long")
 
-# Rest of your imports and setup
-RPC_URL = os.environ.get('RPC_URL')
-CONTRACT_ADDRESS = os.environ.get('CONTRACT_ADDRESS')
-
-# Initialize Web3
-w3 = Web3(Web3.HTTPProvider(RPC_URL)) if RPC_URL else None
-if w3:
-    w3.middleware_onion.inject(geth_poa_middleware, layer=0)
-
-# Discord bot setup
+# Discord bot setup with minimal intents
 intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix='?', intents=intents)
+intents.message_content = True  # We only need message content intent for commands
+
+# Initialize bot with minimal requirements
+bot = commands.Bot(
+    command_prefix='?',
+    intents=intents,
+    description='A bot to check TVL'
+)
 
 @bot.event
 async def on_ready():
     print(f'Bot is ready! Logged in as {bot.user.name} ({bot.user.id})')
-    print('Connected to guilds:', [guild.name for guild in bot.guilds])
 
 @bot.command(name='tvl')
 async def tvl(ctx):
-    """
-    Command to fetch and display TVL
-    Usage: ?tvl
-    """
+    """Simple command to check if bot is working"""
     await ctx.send("TVL command received! Bot is working.")
-    # Rest of TVL logic will be added back once basic functionality is confirmed
 
 try:
     print("Starting bot...")
