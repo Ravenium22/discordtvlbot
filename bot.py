@@ -19,9 +19,11 @@ STAKESTONE_VAULT = Web3.to_checksum_address("0x8f88aE3798E8fF3D0e0DE7465A0863C9b
 STAKESTONE_WETH = Web3.to_checksum_address("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
 STAKESTONE_STONE = Web3.to_checksum_address("0x7122985656e38BDC0302Db86685bb972b145bD3C")
 
-# EtheneConcrete Vault
-ETHENE_VAULT = Web3.to_checksum_address("0x9DC37e4a901b1e21Bd05E75c3B9A633A17001a39")
-ETHENE_TOKEN = Web3.to_checksum_address("0xf80c6636F9597d6a7FC1E5182B168B71e98Fd1cB")
+# Ethena Vaults and Tokens
+ETHENA_SUDE_VAULT = Web3.to_checksum_address("0x9DC37e4a901b1e21Bd05E75c3B9A633A17001a39")
+ETHENA_USDE_VAULT = Web3.to_checksum_address("0xf80c6636F9597d6a7FC1E5182B168B71e98Fd1cB")
+SUDE_TOKEN = Web3.to_checksum_address("0x9D39A5DE30e57443BfF2A8307A4256c8797A3497")
+USDE_TOKEN = Web3.to_checksum_address("0x4c9EDD5852cd905f086C759E8383e09bff1E68B3")
 
 # Initialize Web3
 w3 = Web3(Web3.HTTPProvider(RPC_URL)) if RPC_URL else None
@@ -59,7 +61,7 @@ async def get_token_prices():
             eth_url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
             async with session.get(eth_url) as response:
                 if response.status != 200:
-                    return None, None, None
+                    return None, None, None, None
                 eth_data = await response.json()
                 eth_price = eth_data['ethereum']['usd']
 
@@ -67,17 +69,23 @@ async def get_token_prices():
             stone_url = "https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses=0x7122985656e38BDC0302Db86685bb972b145bD3C&vs_currencies=usd"
             async with session.get(stone_url) as response:
                 if response.status != 200:
-                    return None, None, None
+                    return None, None, None, None
                 stone_data = await response.json()
                 stone_price = stone_data.get('0x7122985656e38bdc0302db86685bb972b145bd3c', {}).get('usd', 0)
-                
-            # Get Ethene price (assuming same as ETH for now, adjust if needed)
-            ethene_price = eth_price
 
-            return eth_price, stone_price, ethene_price
+            # Get USDe and sUSDe prices
+            stables_url = f"https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses={USDE_TOKEN},{SUDE_TOKEN}&vs_currencies=usd"
+            async with session.get(stables_url) as response:
+                if response.status != 200:
+                    return None, None, None, None
+                stables_data = await response.json()
+                usde_price = stables_data.get(USDE_TOKEN.lower(), {}).get('usd', 1.0)  # Default to 1 if not found
+                sude_price = stables_data.get(SUDE_TOKEN.lower(), {}).get('usd', 1.0)  # Default to 1 if not found
+
+            return eth_price, stone_price, usde_price, sude_price
     except Exception as e:
         print(f"Error fetching prices: {str(e)}")
-        return None, None, None
+        return None, None, None, None
 
 async def get_token_balance(token_address, wallet_address):
     """Get ERC20 token balance"""
@@ -97,14 +105,14 @@ def format_value(value):
     return f"${value / 1_000_000:.1f}M"
 
 async def calculate_tvl():
-    """Calculate TVL for both vaults"""
+    """Calculate TVL for both protocols"""
     try:
         if not w3 or not w3.is_connected():
             return None, "RPC connection failed"
 
         # Get prices
-        eth_price, stone_price, ethene_price = await get_token_prices()
-        if None in [eth_price, stone_price, ethene_price]:
+        eth_price, stone_price, usde_price, sude_price = await get_token_prices()
+        if None in [eth_price, stone_price, usde_price, sude_price]:
             return None, "Failed to fetch token prices"
 
         # Calculate StakeStone Vault TVL
@@ -112,16 +120,17 @@ async def calculate_tvl():
         stakestone_stone = await get_token_balance(STAKESTONE_STONE, STAKESTONE_VAULT)
         stakestone_tvl = (stakestone_weth * eth_price) + (stakestone_stone * stone_price)
 
-        # Calculate Ethene Vault TVL
-        ethene_balance = await get_token_balance(ETHENE_TOKEN, ETHENE_VAULT)
-        ethene_tvl = ethene_balance * ethene_price
+        # Calculate Ethena Vault TVL
+        sude_balance = await get_token_balance(SUDE_TOKEN, ETHENA_SUDE_VAULT)
+        usde_balance = await get_token_balance(USDE_TOKEN, ETHENA_USDE_VAULT)
+        ethena_tvl = (sude_balance * sude_price) + (usde_balance * usde_price)
 
         # Calculate total TVL
-        total_tvl = stakestone_tvl + ethene_tvl
+        total_tvl = stakestone_tvl + ethena_tvl
 
         return {
             'stakestone': stakestone_tvl,
-            'ethene': ethene_tvl,
+            'ethena': ethena_tvl,
             'total': total_tvl
         }, None
 
@@ -145,7 +154,7 @@ async def tvl(ctx):
             # Format the message
             response = f"""```
 StakeStone Vault: {format_value(tvl_data['stakestone'])}
-EtheneXConcrete Vault: {format_value(tvl_data['ethene'])}
+Ethena Vault: {format_value(tvl_data['ethena'])}
 TOTAL TVL: {format_value(tvl_data['total'])}```"""
             
             await message.edit(content=response)
