@@ -12,9 +12,11 @@ import sys
 load_dotenv()
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 RPC_URL = os.environ.get('RPC_URL')
-VAULT_ADDRESS = "0x8f88aE3798E8fF3D0e0DE7465A0863C9bbB577f0"  # Vault address
-WETH_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH contract
-STONE_ADDRESS = "0x7E1E303cA1923Cadb6F312425235e284d965c8f6"  # Stone token address
+
+# Convert all addresses to checksum format
+VAULT_ADDRESS = Web3.to_checksum_address("0x8f88aE3798E8fF3D0e0DE7465A0863C9bbB577f0")
+WETH_ADDRESS = Web3.to_checksum_address("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
+STONE_ADDRESS = Web3.to_checksum_address("0x7e1e303ca1923cadb6f312425235e284d965c8f6")  # Made lowercase before checksum
 
 # Initialize Web3
 w3 = Web3(Web3.HTTPProvider(RPC_URL)) if RPC_URL else None
@@ -59,10 +61,14 @@ async def get_eth_price():
 
 async def get_token_balance(token_address, wallet_address):
     """Get ERC20 token balance"""
-    token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
-    balance = token_contract.functions.balanceOf(wallet_address).call()
-    decimals = token_contract.functions.decimals().call()
-    return float(balance) / (10 ** decimals)
+    try:
+        token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
+        balance = token_contract.functions.balanceOf(wallet_address).call()
+        decimals = token_contract.functions.decimals().call()
+        return float(balance) / (10 ** decimals)
+    except Exception as e:
+        print(f"Error getting balance for token {token_address}: {str(e)}")
+        return 0
 
 async def calculate_tvl():
     """Calculate TVL by getting WETH and Stone balances"""
@@ -72,9 +78,11 @@ async def calculate_tvl():
 
         # Get WETH balance
         weth_balance = await get_token_balance(WETH_ADDRESS, VAULT_ADDRESS)
+        print(f"WETH Balance: {weth_balance}")
         
         # Get Stone balance
         stone_balance = await get_token_balance(STONE_ADDRESS, VAULT_ADDRESS)
+        print(f"Stone Balance: {stone_balance}")
         
         # Get ETH price
         eth_price = await get_eth_price()
