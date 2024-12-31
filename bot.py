@@ -24,7 +24,7 @@ w3 = Web3(Web3.HTTPProvider(RPC_URL)) if RPC_URL else None
 if w3:
     w3.middleware_onion.inject(geth_poa_middleware, layer=0)
 
-# ABI for Deposit event
+# ABI with Deposit and Withdraw events
 CONTRACT_ABI = [
     {
         "anonymous": False,
@@ -41,6 +41,23 @@ CONTRACT_ABI = [
             }
         ],
         "name": "Deposit",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {
+                "indexed": True,
+                "name": "user",
+                "type": "address"
+            },
+            {
+                "indexed": False,
+                "name": "amount",
+                "type": "uint256"
+            }
+        ],
+        "name": "Withdraw",
         "type": "event"
     }
 ]
@@ -64,40 +81,57 @@ async def get_eth_price():
     return None
 
 async def calculate_tvl():
-    """Calculate TVL by summing all deposits"""
+    """Calculate TVL by tracking all deposits and withdrawals"""
     try:
         if not w3 or not w3.is_connected():
-            return None
+            return None, "RPC connection failed"
 
         contract = w3.eth.contract(
             address=Web3.to_checksum_address(CONTRACT_ADDRESS),
             abi=CONTRACT_ABI
         )
-        
-        # Get latest block
+
+        # Get contract deploy block (you'll need to set this)
+        deploy_block = 21458185  # Replace with actual deploy block
         latest_block = w3.eth.block_number
-        from_block = latest_block - 10000  # Look back ~24 hours (assuming ~15s block time)
-        
-        # Get deposit events
-        deposit_filter = contract.events.Deposit.create_filter(fromBlock=from_block)
-        events = deposit_filter.get_all_entries()
-        
-        # Sum all deposits
-        total_deposits = sum(event['args']['amount'] for event in events)
-        total_deposits_eth = w3.from_wei(total_deposits, 'ether')
-        
-        # Get current ETH price
+
+        # Track balances by address
+        balances = {}
+
+        # Process in chunks to handle large number of events
+        chunk_size = 50000
+        for start_block in range(deploy_block, latest_block + 1, chunk_size):
+            end_block = min(start_block + chunk_size - 1, latest_block)
+            
+            # Get deposits
+            deposit_events = contract.events.Deposit.get_logs(fromBlock=start_block, toBlock=end_block)
+            for event in deposit_events:
+                user = event['args']['user']
+                amount = event['args']['amount']
+                balances[user] = balances.get(user, 0) + amount
+
+            # Get withdrawals
+            withdraw_events = contract.events.Withdraw.get_logs(fromBlock=start_block, toBlock=end_block)
+            for event in withdraw_events:
+                user = event['args']['user']
+                amount = event['args']['amount']
+                balances[user] = balances.get(user, 0) - amount
+
+        # Calculate total TVL
+        total_balance_wei = sum(balance for balance in balances.values() if balance > 0)
+        total_balance_eth = w3.from_wei(total_balance_wei, 'ether')
+
+        # Get ETH price
         eth_price = await get_eth_price()
         if eth_price is None:
-            return None
-            
-        # Calculate TVL in USD
-        tvl_usd = float(total_deposits_eth) * eth_price
-        return tvl_usd
-        
+            return None, "Failed to fetch ETH price"
+
+        tvl_usd = float(total_balance_eth) * eth_price
+        return tvl_usd, None
+
     except Exception as e:
         print(f"Error calculating TVL: {str(e)}")
-        return None
+        return None, str(e)
 
 @bot.event
 async def on_ready():
@@ -107,11 +141,11 @@ async def on_ready():
 async def tvl(ctx):
     """Command to fetch and display TVL"""
     try:
-        # Send initial response to show the bot is working
-        message = await ctx.send("Calculating TVL...")
+        # Send initial response
+        message = await ctx.send("Calculating TVL (this might take a minute as we process all historical data)...")
         
         # Calculate TVL
-        tvl_value = await calculate_tvl()
+        tvl_value, error = await calculate_tvl()
         
         if tvl_value is not None:
             formatted_tvl = f"${tvl_value:,.2f}"
@@ -121,11 +155,11 @@ async def tvl(ctx):
                 color=discord.Color.blue()
             )
             embed.add_field(name="Current TVL", value=formatted_tvl)
-            embed.set_footer(text="Data calculated from deposit events")
+            embed.set_footer(text="Calculated from all historical deposits and withdrawals")
             
             await message.edit(content=None, embed=embed)
         else:
-            await message.edit(content="Unable to calculate TVL. Please check RPC connection and contract address.")
+            await message.edit(content=f"Unable to calculate TVL: {error}")
     except Exception as e:
         await ctx.send(f"An error occurred: {str(e)}")
 
