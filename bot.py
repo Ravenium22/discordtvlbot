@@ -11,24 +11,93 @@ import sys
 # Load environment variables
 load_dotenv()
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
+RPC_URL = os.environ.get('RPC_URL')
+CONTRACT_ADDRESS = os.environ.get('CONTRACT_ADDRESS')
 
 # Validate token exists
 if not DISCORD_TOKEN:
-    print("Error: No Discord token provided. Please set the DISCORD_TOKEN environment variable.")
+    print("Error: No Discord token provided.")
     sys.exit(1)
 
-print("Token validation: Token exists and is", len(DISCORD_TOKEN), "characters long")
+# Initialize Web3
+w3 = Web3(Web3.HTTPProvider(RPC_URL)) if RPC_URL else None
+if w3:
+    w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+
+# ABI for Deposit event
+CONTRACT_ABI = [
+    {
+        "anonymous": False,
+        "inputs": [
+            {
+                "indexed": True,
+                "name": "user",
+                "type": "address"
+            },
+            {
+                "indexed": False,
+                "name": "amount",
+                "type": "uint256"
+            }
+        ],
+        "name": "Deposit",
+        "type": "event"
+    }
+]
 
 # Discord bot setup with minimal intents
 intents = discord.Intents.default()
-intents.message_content = True  # We only need message content intent for commands
+intents.message_content = True
+bot = commands.Bot(command_prefix='?', intents=intents)
 
-# Initialize bot with minimal requirements
-bot = commands.Bot(
-    command_prefix='?',
-    intents=intents,
-    description='A bot to check TVL'
-)
+async def get_eth_price():
+    """Get current ETH price from CoinGecko"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data['ethereum']['usd']
+    except Exception as e:
+        print(f"Error fetching ETH price: {str(e)}")
+    return None
+
+async def calculate_tvl():
+    """Calculate TVL by summing all deposits"""
+    try:
+        if not w3 or not w3.is_connected():
+            return None
+
+        contract = w3.eth.contract(
+            address=Web3.to_checksum_address(CONTRACT_ADDRESS),
+            abi=CONTRACT_ABI
+        )
+        
+        # Get latest block
+        latest_block = w3.eth.block_number
+        from_block = latest_block - 10000  # Look back ~24 hours (assuming ~15s block time)
+        
+        # Get deposit events
+        deposit_filter = contract.events.Deposit.create_filter(fromBlock=from_block)
+        events = deposit_filter.get_all_entries()
+        
+        # Sum all deposits
+        total_deposits = sum(event['args']['amount'] for event in events)
+        total_deposits_eth = w3.from_wei(total_deposits, 'ether')
+        
+        # Get current ETH price
+        eth_price = await get_eth_price()
+        if eth_price is None:
+            return None
+            
+        # Calculate TVL in USD
+        tvl_usd = float(total_deposits_eth) * eth_price
+        return tvl_usd
+        
+    except Exception as e:
+        print(f"Error calculating TVL: {str(e)}")
+        return None
 
 @bot.event
 async def on_ready():
@@ -36,16 +105,34 @@ async def on_ready():
 
 @bot.command(name='tvl')
 async def tvl(ctx):
-    """Simple command to check if bot is working"""
-    await ctx.send("TVL command received! Bot is working.")
+    """Command to fetch and display TVL"""
+    try:
+        # Send initial response to show the bot is working
+        message = await ctx.send("Calculating TVL...")
+        
+        # Calculate TVL
+        tvl_value = await calculate_tvl()
+        
+        if tvl_value is not None:
+            formatted_tvl = f"${tvl_value:,.2f}"
+            
+            embed = discord.Embed(
+                title="StoneBeraVault TVL",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="Current TVL", value=formatted_tvl)
+            embed.set_footer(text="Data calculated from deposit events")
+            
+            await message.edit(content=None, embed=embed)
+        else:
+            await message.edit(content="Unable to calculate TVL. Please check RPC connection and contract address.")
+    except Exception as e:
+        await ctx.send(f"An error occurred: {str(e)}")
 
+# Run the bot
 try:
     print("Starting bot...")
     bot.run(DISCORD_TOKEN)
-except discord.errors.LoginFailure as e:
-    print("Error: Failed to log in to Discord. Token may be invalid.")
-    print(f"Error details: {str(e)}")
-    sys.exit(1)
 except Exception as e:
     print(f"An unexpected error occurred: {str(e)}")
     sys.exit(1)
