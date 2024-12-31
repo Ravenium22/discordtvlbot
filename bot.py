@@ -54,37 +54,55 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='?', intents=intents)
 
 async def get_token_prices():
-    """Get token prices from CoinGecko"""
+    """Get token prices from CoinGecko with better error handling"""
     try:
+        headers = {
+            'accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0'
+        }
+        
         async with aiohttp.ClientSession() as session:
             # Get ETH price
-            eth_url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
-            async with session.get(eth_url) as response:
-                if response.status != 200:
-                    return None, None, None, None
-                eth_data = await response.json()
-                eth_price = eth_data['ethereum']['usd']
+            eth_price = None
+            try:
+                async with session.get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd", headers=headers) as response:
+                    if response.status == 200:
+                        eth_data = await response.json()
+                        eth_price = eth_data['ethereum']['usd']
+                        print(f"ETH price: ${eth_price}")
+            except Exception as e:
+                print(f"Error fetching ETH price: {e}")
 
             # Get Stone price
-            stone_url = "https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses=0x7122985656e38BDC0302Db86685bb972b145bD3C&vs_currencies=usd"
-            async with session.get(stone_url) as response:
-                if response.status != 200:
-                    return None, None, None, None
-                stone_data = await response.json()
-                stone_price = stone_data.get('0x7122985656e38bdc0302db86685bb972b145bd3c', {}).get('usd', 0)
+            stone_price = None
+            try:
+                async with session.get(f"https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses={STAKESTONE_STONE}&vs_currencies=usd", headers=headers) as response:
+                    if response.status == 200:
+                        stone_data = await response.json()
+                        stone_price = stone_data.get(STAKESTONE_STONE.lower(), {}).get('usd', 0)
+                        print(f"Stone price: ${stone_price}")
+            except Exception as e:
+                print(f"Error fetching Stone price: {e}")
 
-            # Get USDe and sUSDe prices
-            stables_url = f"https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses={USDE_TOKEN},{SUDE_TOKEN}&vs_currencies=usd"
-            async with session.get(stables_url) as response:
-                if response.status != 200:
-                    return None, None, None, None
-                stables_data = await response.json()
-                usde_price = stables_data.get(USDE_TOKEN.lower(), {}).get('usd', 1.0)  # Default to 1 if not found
-                sude_price = stables_data.get(SUDE_TOKEN.lower(), {}).get('usd', 1.0)  # Default to 1 if not found
+            # For stablecoins, we'll assume they're pegged to $1 if we can't get price
+            usde_price = 1.0
+            sude_price = 1.0
+
+            # Try to get actual prices, but fall back to 1.0 if unavailable
+            try:
+                async with session.get(f"https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses={USDE_TOKEN},{SUDE_TOKEN}&vs_currencies=usd", headers=headers) as response:
+                    if response.status == 200:
+                        stables_data = await response.json()
+                        usde_price = stables_data.get(USDE_TOKEN.lower(), {}).get('usd', 1.0)
+                        sude_price = stables_data.get(SUDE_TOKEN.lower(), {}).get('usd', 1.0)
+                        print(f"USDe price: ${usde_price}")
+                        print(f"sUSDe price: ${sude_price}")
+            except Exception as e:
+                print(f"Error fetching stablecoin prices, using default $1: {e}")
 
             return eth_price, stone_price, usde_price, sude_price
     except Exception as e:
-        print(f"Error fetching prices: {str(e)}")
+        print(f"Error in get_token_prices: {str(e)}")
         return None, None, None, None
 
 async def get_token_balance(token_address, wallet_address):
@@ -110,19 +128,24 @@ async def calculate_tvl():
         if not w3 or not w3.is_connected():
             return None, "RPC connection failed"
 
-        # Get prices
+        # Get prices with detailed logging
         eth_price, stone_price, usde_price, sude_price = await get_token_prices()
-        if None in [eth_price, stone_price, usde_price, sude_price]:
-            return None, "Failed to fetch token prices"
-
+        
+        if eth_price is None:
+            return None, "Failed to fetch ETH price"
+            
         # Calculate StakeStone Vault TVL
         stakestone_weth = await get_token_balance(STAKESTONE_WETH, STAKESTONE_VAULT)
         stakestone_stone = await get_token_balance(STAKESTONE_STONE, STAKESTONE_VAULT)
-        stakestone_tvl = (stakestone_weth * eth_price) + (stakestone_stone * stone_price)
+        print(f"StakeStone WETH balance: {stakestone_weth}")
+        print(f"StakeStone Stone balance: {stakestone_stone}")
+        stakestone_tvl = (stakestone_weth * eth_price) + (stakestone_stone * (stone_price or 0))
 
         # Calculate Ethena Vault TVL
         sude_balance = await get_token_balance(SUDE_TOKEN, ETHENA_SUDE_VAULT)
         usde_balance = await get_token_balance(USDE_TOKEN, ETHENA_USDE_VAULT)
+        print(f"Ethena sUSDe balance: {sude_balance}")
+        print(f"Ethena USDe balance: {usde_balance}")
         ethena_tvl = (sude_balance * sude_price) + (usde_balance * usde_price)
 
         # Calculate total TVL
@@ -151,7 +174,6 @@ async def tvl(ctx):
         tvl_data, error = await calculate_tvl()
         
         if tvl_data is not None:
-            # Format the message
             response = f"""```
 StakeStone Vault: {format_value(tvl_data['stakestone'])}
 Ethena Vault: {format_value(tvl_data['ethena'])}
