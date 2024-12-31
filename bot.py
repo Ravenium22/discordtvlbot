@@ -19,11 +19,11 @@ STAKESTONE_VAULT = Web3.to_checksum_address("0x8f88aE3798E8fF3D0e0DE7465A0863C9b
 STAKESTONE_WETH = Web3.to_checksum_address("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
 STAKESTONE_STONE = Web3.to_checksum_address("0x7122985656e38BDC0302Db86685bb972b145bD3C")
 
-# Ethena Vaults and Tokens
-ETHENA_SUDE_VAULT = Web3.to_checksum_address("0x9DC37e4a901b1e21Bd05E75c3B9A633A17001a39")
-ETHENA_USDE_VAULT = Web3.to_checksum_address("0xf80c6636F9597d6a7FC1E5182B168B71e98Fd1cB")
-SUDE_TOKEN = Web3.to_checksum_address("0x9D39A5DE30e57443BfF2A8307A4256c8797A3497")
-USDE_TOKEN = Web3.to_checksum_address("0x4c9EDD5852cd905f086C759E8383e09bff1E68B3")
+# Ethena Tokens (first let's verify sUSDe/USDe in their respective vaults)
+SUDE_TOKEN = Web3.to_checksum_address("0x9D39A5DE30e57443BfF2A8307A4256c8797A3497")  # sUSDe token
+USDE_TOKEN = Web3.to_checksum_address("0x4c9EDD5852cd905f086C759E8383e09bff1E68B3")   # USDe token
+SUDE_VAULT = Web3.to_checksum_address("0x9DC37e4a901b1e21Bd05E75c3B9A633A17001a39")  # Vault holding sUSDe
+USDE_VAULT = Web3.to_checksum_address("0xf80c6636F9597d6a7FC1E5182B168B71e98Fd1cB")  # Vault holding USDe
 
 # Initialize Web3
 w3 = Web3(Web3.HTTPProvider(RPC_URL)) if RPC_URL else None
@@ -53,67 +53,17 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='?', intents=intents)
 
-async def get_token_prices():
-    """Get token prices from CoinGecko with better error handling"""
-    try:
-        headers = {
-            'accept': 'application/json',
-            'User-Agent': 'Mozilla/5.0'
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            # Get ETH price
-            eth_price = None
-            try:
-                async with session.get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd", headers=headers) as response:
-                    if response.status == 200:
-                        eth_data = await response.json()
-                        eth_price = eth_data['ethereum']['usd']
-                        print(f"ETH price: ${eth_price}")
-            except Exception as e:
-                print(f"Error fetching ETH price: {e}")
-
-            # Get Stone price
-            stone_price = None
-            try:
-                async with session.get(f"https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses={STAKESTONE_STONE}&vs_currencies=usd", headers=headers) as response:
-                    if response.status == 200:
-                        stone_data = await response.json()
-                        stone_price = stone_data.get(STAKESTONE_STONE.lower(), {}).get('usd', 0)
-                        print(f"Stone price: ${stone_price}")
-            except Exception as e:
-                print(f"Error fetching Stone price: {e}")
-
-            # For stablecoins, we'll assume they're pegged to $1 if we can't get price
-            usde_price = 1.0
-            sude_price = 1.0
-
-            # Try to get actual prices, but fall back to 1.0 if unavailable
-            try:
-                async with session.get(f"https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses={USDE_TOKEN},{SUDE_TOKEN}&vs_currencies=usd", headers=headers) as response:
-                    if response.status == 200:
-                        stables_data = await response.json()
-                        usde_price = stables_data.get(USDE_TOKEN.lower(), {}).get('usd', 1.0)
-                        sude_price = stables_data.get(SUDE_TOKEN.lower(), {}).get('usd', 1.0)
-                        print(f"USDe price: ${usde_price}")
-                        print(f"sUSDe price: ${sude_price}")
-            except Exception as e:
-                print(f"Error fetching stablecoin prices, using default $1: {e}")
-
-            return eth_price, stone_price, usde_price, sude_price
-    except Exception as e:
-        print(f"Error in get_token_prices: {str(e)}")
-        return None, None, None, None
-
 async def get_token_balance(token_address, wallet_address):
-    """Get ERC20 token balance"""
+    """Get ERC20 token balance with detailed logging"""
     try:
         token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
         balance = token_contract.functions.balanceOf(wallet_address).call()
         decimals = token_contract.functions.decimals().call()
-        return float(balance) / (10 ** decimals)
+        balance_formatted = float(balance) / (10 ** decimals)
+        print(f"Balance for token {token_address} in wallet {wallet_address}: {balance_formatted}")
+        return balance_formatted
     except Exception as e:
-        print(f"Error getting balance for token {token_address}: {str(e)}")
+        print(f"Error getting balance for token {token_address} in wallet {wallet_address}: {str(e)}")
         return 0
 
 def format_value(value):
@@ -123,33 +73,48 @@ def format_value(value):
     return f"${value / 1_000_000:.1f}M"
 
 async def calculate_tvl():
-    """Calculate TVL for both protocols"""
+    """Calculate TVL for both protocols with detailed logging"""
     try:
         if not w3 or not w3.is_connected():
             return None, "RPC connection failed"
 
-        # Get prices with detailed logging
-        eth_price, stone_price, usde_price, sude_price = await get_token_prices()
-        
-        if eth_price is None:
-            return None, "Failed to fetch ETH price"
-            
-        # Calculate StakeStone Vault TVL
+        # StakeStone TVL calculation
         stakestone_weth = await get_token_balance(STAKESTONE_WETH, STAKESTONE_VAULT)
         stakestone_stone = await get_token_balance(STAKESTONE_STONE, STAKESTONE_VAULT)
-        print(f"StakeStone WETH balance: {stakestone_weth}")
-        print(f"StakeStone Stone balance: {stakestone_stone}")
-        stakestone_tvl = (stakestone_weth * eth_price) + (stakestone_stone * (stone_price or 0))
+        print(f"StakeStone - WETH balance: {stakestone_weth}")
+        print(f"StakeStone - Stone balance: {stakestone_stone}")
+        
+        # Ethena TVL calculation
+        # First check USDE holdings
+        usde_balance = await get_token_balance(USDE_TOKEN, USDE_VAULT)
+        print(f"Ethena - USDe balance in vault: {usde_balance}")
+        
+        # Then check sUSDe holdings
+        sude_balance = await get_token_balance(SUDE_TOKEN, SUDE_VAULT)
+        print(f"Ethena - sUSDe balance in vault: {sude_balance}")
+        
+        # Calculate TVLs (using ETH price only for WETH, stablecoins at $1)
+        eth_price = 3000  # Using fixed price temporarily for debugging
+        stakestone_tvl = (stakestone_weth * eth_price) + (stakestone_stone * eth_price)  # Assuming Stone price = ETH price for now
+        ethena_tvl = (usde_balance * 1.0) + (sude_balance * 1.0)  # Both are stablecoins so using $1
 
-        # Calculate Ethena Vault TVL
-        sude_balance = await get_token_balance(SUDE_TOKEN, ETHENA_SUDE_VAULT)
-        usde_balance = await get_token_balance(USDE_TOKEN, ETHENA_USDE_VAULT)
-        print(f"Ethena sUSDe balance: {sude_balance}")
-        print(f"Ethena USDe balance: {usde_balance}")
-        ethena_tvl = (sude_balance * sude_price) + (usde_balance * usde_price)
-
-        # Calculate total TVL
         total_tvl = stakestone_tvl + ethena_tvl
+
+        print(f"""
+Detailed TVL Breakdown:
+----------------------
+StakeStone:
+- WETH Value: ${stakestone_weth * eth_price:,.2f}
+- Stone Value: ${stakestone_stone * eth_price:,.2f}
+- Total: ${stakestone_tvl:,.2f}
+
+Ethena:
+- USDe Value: ${usde_balance:,.2f}
+- sUSDe Value: ${sude_balance:,.2f}
+- Total: ${ethena_tvl:,.2f}
+
+Total TVL: ${total_tvl:,.2f}
+""")
 
         return {
             'stakestone': stakestone_tvl,
