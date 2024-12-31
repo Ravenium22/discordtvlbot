@@ -13,11 +13,31 @@ load_dotenv()
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 RPC_URL = os.environ.get('RPC_URL')
 VAULT_ADDRESS = "0x8f88aE3798E8fF3D0e0DE7465A0863C9bbB577f0"  # Vault address
+WETH_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH contract
+STONE_ADDRESS = "0x7E1E303cA1923Cadb6F312425235e284d965c8f6"  # Stone token address
 
 # Initialize Web3
 w3 = Web3(Web3.HTTPProvider(RPC_URL)) if RPC_URL else None
 if w3:
     w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+
+# ERC20 ABI for balanceOf
+ERC20_ABI = [
+    {
+        "constant": True,
+        "inputs": [{"name": "_owner", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "balance", "type": "uint256"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [{"name": "", "type": "uint8"}],
+        "type": "function"
+    }
+]
 
 # Discord bot setup
 intents = discord.Intents.default()
@@ -37,27 +57,38 @@ async def get_eth_price():
         print(f"Error fetching ETH price: {str(e)}")
     return None
 
+async def get_token_balance(token_address, wallet_address):
+    """Get ERC20 token balance"""
+    token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
+    balance = token_contract.functions.balanceOf(wallet_address).call()
+    decimals = token_contract.functions.decimals().call()
+    return float(balance) / (10 ** decimals)
+
 async def calculate_tvl():
-    """Calculate TVL by getting vault's ETH balance"""
+    """Calculate TVL by getting WETH and Stone balances"""
     try:
         if not w3 or not w3.is_connected():
-            return None, "RPC connection failed"
+            return None, None, None, "RPC connection failed"
 
-        # Get ETH balance of vault address
-        balance_wei = w3.eth.get_balance(VAULT_ADDRESS)
-        balance_eth = w3.from_wei(balance_wei, 'ether')
+        # Get WETH balance
+        weth_balance = await get_token_balance(WETH_ADDRESS, VAULT_ADDRESS)
+        
+        # Get Stone balance
+        stone_balance = await get_token_balance(STONE_ADDRESS, VAULT_ADDRESS)
         
         # Get ETH price
         eth_price = await get_eth_price()
         if eth_price is None:
-            return None, "Failed to fetch ETH price"
+            return None, None, None, "Failed to fetch ETH price"
 
-        tvl_usd = float(balance_eth) * eth_price
-        return tvl_usd, balance_eth
+        # Calculate TVL in USD (assuming WETH = ETH price)
+        tvl_usd = weth_balance * eth_price
+
+        return tvl_usd, weth_balance, stone_balance, None
 
     except Exception as e:
         print(f"Error calculating TVL: {str(e)}")
-        return None, str(e)
+        return None, None, None, str(e)
 
 @bot.event
 async def on_ready():
@@ -71,23 +102,25 @@ async def tvl(ctx):
         message = await ctx.send("Calculating TVL...")
         
         # Calculate TVL
-        tvl_value, eth_balance = await calculate_tvl()
+        tvl_value, weth_balance, stone_balance, error = await calculate_tvl()
         
         if tvl_value is not None:
             formatted_tvl = f"${tvl_value:,.2f}"
-            formatted_eth = f"{eth_balance:,.2f} ETH"
+            formatted_weth = f"{weth_balance:,.4f} WETH"
+            formatted_stone = f"{stone_balance:,.4f} STONE"
             
             embed = discord.Embed(
                 title="StoneBeraVault TVL",
                 color=discord.Color.blue()
             )
             embed.add_field(name="TVL (USD)", value=formatted_tvl, inline=True)
-            embed.add_field(name="TVL (ETH)", value=formatted_eth, inline=True)
-            embed.set_footer(text="Data fetched from vault balance")
+            embed.add_field(name="WETH Balance", value=formatted_weth, inline=True)
+            embed.add_field(name="STONE Balance", value=formatted_stone, inline=True)
+            embed.set_footer(text="Data fetched from token balances")
             
             await message.edit(content=None, embed=embed)
         else:
-            await message.edit(content=f"Unable to calculate TVL: {eth_balance}")
+            await message.edit(content=f"Unable to calculate TVL: {error}")
     except Exception as e:
         await ctx.send(f"An error occurred: {str(e)}")
 
